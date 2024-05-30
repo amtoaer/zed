@@ -1,3 +1,7 @@
+mod open_ai_compatible;
+
+pub use open_ai_compatible::OpenAiCompatibleModel;
+
 use anyhow::{anyhow, Context, Result};
 use futures::{io::BufReader, stream::BoxStream, AsyncBufReadExt, AsyncReadExt, StreamExt};
 use http::{AsyncBody, HttpClient, Method, Request as HttpRequest};

@@ -3,6 +3,7 @@ use std::fmt;
 pub use anthropic::Model as AnthropicModel;
 use gpui::Pixels;
 pub use open_ai::Model as OpenAiModel;
+pub use open_ai::OpenAiCompatibleModel;
 use schemars::{
     schema::{InstanceType, Metadata, Schema, SchemaObject},
     JsonSchema,
@@ -167,6 +168,15 @@ pub enum AssistantProvider {
         #[serde(default)]
         default_model: AnthropicModel,
         #[serde(default = "anthropic_api_url")]
+        api_url: String,
+        #[serde(default)]
+        low_speed_timeout_in_seconds: Option<u64>,
+    },
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible {
+        #[serde(default, flatten)]
+        default_model: OpenAiCompatibleModel,
+        #[serde(default = "open_ai_url")]
         api_url: String,
         #[serde(default)]
         low_speed_timeout_in_seconds: Option<u64>,

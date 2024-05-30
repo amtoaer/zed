@@ -55,6 +55,17 @@ pub fn init(client: Arc<Client>, cx: &mut AppContext) {
             low_speed_timeout_in_seconds.map(Duration::from_secs),
             settings_version,
         )),
+        AssistantProvider::OpenAiCompatible {
+            default_model,
+            api_url,
+            low_speed_timeout_in_seconds,
+        } => CompletionProvider::OpenAi(OpenAiCompletionProvider::new(
+            default_model.clone(),
+            api_url.clone(),
+            client.http_client(),
+            low_speed_timeout_in_seconds.map(Duration::from_secs),
+            settings_version,
+        )),
     };
     cx.set_global(provider);
 
@@ -148,6 +159,7 @@ pub enum CompletionProvider {
     OpenAi(OpenAiCompletionProvider),
     Anthropic(AnthropicCompletionProvider),
     ZedDotDev(ZedDotDevCompletionProvider),
+    OpenAiCompatible(OpenAiCompletionProvider),
     #[cfg(test)]
     Fake(FakeCompletionProvider),
 }
