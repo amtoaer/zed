@@ -107,19 +107,22 @@ fn area(rect: &Bounds<ScaledPixels>) -> f32 {
     rect.size.width.0 * rect.size.height.0
 }
 
-/// When set (`GPUI_EXPERIMENTAL_ORDER_TOLERANT_DAMAGE=1`), the scene diff
-/// matches primitives by content, ignoring their per-frame `order` values.
-/// When unset, `order` values are compared, so any mid-scene insertion
-/// cascades damage over everything painted after it - safe but usually
-/// close to full-window damage. The diff only runs at all when one of the
-/// experimental rendering features (`GPUI_EXPERIMENTAL_PRESENT_SKIP`,
-/// `GPUI_EXPERIMENTAL_PARTIAL_RENDER`) is enabled, and they are only
-/// worthwhile in combination with this one.
+/// By default, the scene diff matches primitives by content, ignoring their
+/// per-frame `order` values. Set `GPUI_EXPERIMENTAL_ORDER_TOLERANT_DAMAGE=0`
+/// to compare order values instead, which is safe but usually causes a
+/// mid-scene insertion to damage everything painted after it. The diff only
+/// runs at all when one of the experimental rendering features
+/// (`GPUI_EXPERIMENTAL_PRESENT_SKIP`, `GPUI_EXPERIMENTAL_PARTIAL_RENDER`) is
+/// enabled, and they are only worthwhile in combination with this one.
 pub(crate) fn order_tolerant_damage() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("GPUI_EXPERIMENTAL_ORDER_TOLERANT_DAMAGE")
-            .is_ok_and(|value| value != "0" && !value.is_empty())
+        std::env::var("GPUI_EXPERIMENTAL_ORDER_TOLERANT_DAMAGE").map_or(true, |value| {
+            value != "0"
+                && !value.is_empty()
+                && !value.eq_ignore_ascii_case("false")
+                && !value.eq_ignore_ascii_case("off")
+        })
     })
 }
 

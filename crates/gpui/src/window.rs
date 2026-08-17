@@ -115,24 +115,28 @@ impl DispatchPhase {
 }
 
 /// Whether unchanged frames may skip presentation (and re-presentation of
-/// unchanged content may be skipped). Experimental; off by default, opt in
-/// with `GPUI_EXPERIMENTAL_PRESENT_SKIP=1`. Always disabled in benchmarks,
-/// which measure per-frame renderer submission and rely on every drawn frame
-/// being presented.
+/// unchanged content may be skipped). Experimental; on by default, set
+/// `GPUI_EXPERIMENTAL_PRESENT_SKIP=0` to disable. Always disabled in
+/// benchmarks, which measure per-frame renderer submission and rely on every
+/// drawn frame being presented.
 pub(crate) fn present_skip_enabled() -> bool {
     if cfg!(feature = "bench") {
         return false;
     }
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("GPUI_EXPERIMENTAL_PRESENT_SKIP")
-            .is_ok_and(|value| value != "0" && !value.is_empty())
+        std::env::var("GPUI_EXPERIMENTAL_PRESENT_SKIP").map_or(true, |value| {
+            value != "0"
+                && !value.is_empty()
+                && !value.eq_ignore_ascii_case("false")
+                && !value.eq_ignore_ascii_case("off")
+        })
     })
 }
 
 /// Whether presentation passes scene damage to the renderer so backends that
-/// support it can re-render only the changed region. Experimental; off by
-/// default, opt in with `GPUI_EXPERIMENTAL_PARTIAL_RENDER=1`. Always
+/// support it can re-render only the changed region. Experimental; on by
+/// default, set `GPUI_EXPERIMENTAL_PARTIAL_RENDER=0` to disable. Always
 /// disabled in benchmarks, which measure full-scene renderer submission.
 pub(crate) fn partial_render_enabled() -> bool {
     if cfg!(feature = "bench") {
@@ -140,8 +144,12 @@ pub(crate) fn partial_render_enabled() -> bool {
     }
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("GPUI_EXPERIMENTAL_PARTIAL_RENDER")
-            .is_ok_and(|value| value != "0" && !value.is_empty())
+        std::env::var("GPUI_EXPERIMENTAL_PARTIAL_RENDER").map_or(true, |value| {
+            value != "0"
+                && !value.is_empty()
+                && !value.eq_ignore_ascii_case("false")
+                && !value.eq_ignore_ascii_case("off")
+        })
     })
 }
 
@@ -1191,6 +1199,7 @@ pub struct Window {
     pub(crate) appearance_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) button_layout_observers: SubscriberSet<(), AnyObserver>,
     active: Rc<Cell<bool>>,
+    inactive_frame_interval: Rc<Cell<Option<Duration>>>,
     hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
     /// Whether this window has ever presented a frame. Present-skipping is
@@ -1439,6 +1448,7 @@ impl Window {
         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
         let invalidator = WindowInvalidator::new();
         let active = Rc::new(Cell::new(platform_window.is_active()));
+        let inactive_frame_interval = Rc::new(Cell::new(inactive_frame_interval));
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
@@ -1553,6 +1563,7 @@ impl Window {
             let mut cx = cx.to_async();
             let invalidator = invalidator.clone();
             let active = active.clone();
+            let inactive_frame_interval = inactive_frame_interval.clone();
             let needs_present = needs_present.clone();
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
@@ -1594,7 +1605,7 @@ impl Window {
                 {
                     None
                 } else if !active.get() && !input_rate_tracker.borrow_mut().is_high_rate() {
-                    inactive_frame_interval
+                    inactive_frame_interval.get()
                 } else if let Some(ThermalState::Critical | ThermalState::Serious) = thermal_state {
                     Some(Duration::from_micros(16667))
                 } else {
@@ -1879,6 +1890,7 @@ impl Window {
             appearance_observers: SubscriberSet::new(),
             button_layout_observers: SubscriberSet::new(),
             active,
+            inactive_frame_interval,
             hovered,
             needs_present,
             presented: false,
@@ -2506,6 +2518,15 @@ impl Window {
     /// Returns whether this window is focused by the operating system (receiving key events).
     pub fn is_window_active(&self) -> bool {
         self.active.get()
+    }
+
+    /// Sets the minimum interval between animation frames while this window is inactive.
+    ///
+    /// Set to `None` to disable inactive-window animation frame throttling.
+    pub fn set_inactive_frame_interval(&mut self, interval: Option<Duration>) {
+        if self.inactive_frame_interval.replace(interval) != interval {
+            self.invalidator.wake_platform();
+        }
     }
 
     /// Returns whether this window is considered to be the window
