@@ -859,7 +859,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn draw_with_damage(&self, scene: &Scene, _damage: &SceneDamage) {
         self.draw(scene);
     }
-    fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
     fn is_subpixel_rendering_supported(&self) -> bool;
 

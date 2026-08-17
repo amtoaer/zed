@@ -1568,11 +1568,8 @@ impl Window {
                 // unwinds. Remember force_render so the deferred frame still
                 // bypasses the view cache.
                 //
-                // Returning here skips `complete_frame`, which on Wayland would
-                // stall the window's frame callbacks (no `surface.commit()`) —
-                // but calling it would hit the App borrow panic above, and this
-                // branch is unreachable there in practice: only Windows pumps
-                // platform events (and thus requests frames) mid-draw.
+                // This branch is unreachable on Wayland in practice: only Windows
+                // pumps platform events (and thus requests frames) mid-draw.
                 if draw_in_progress() {
                     log::debug!("deferring re-entrant window draw request");
                     deferred_force_render |= request_frame_options.force_render;
@@ -1611,13 +1608,6 @@ impl Window {
                     {
                         // Don't lose a pending forced render to throttling.
                         deferred_force_render |= force_render;
-                        // Must still complete the frame on platforms that require it.
-                        // On Wayland, `surface.frame()` was already called to request the
-                        // next frame callback, so we must call `surface.commit()` (via
-                        // `complete_frame`) or the compositor won't send another callback.
-                        handle
-                            .update(&mut cx, |_, window, _| window.complete_frame())
-                            .log_err();
                         // The demand that entered this branch (a deferred forced
                         // render or pending next-frame callbacks) is still
                         // unserved; platforms that stop requesting frames for
@@ -1678,12 +1668,6 @@ impl Window {
                         .update(&mut cx, |_, window, _| window.present())
                         .log_err();
                 }
-
-                handle
-                    .update(&mut cx, |_, window, _| {
-                        window.complete_frame();
-                    })
-                    .log_err();
 
                 // Platforms that stop requesting frames for idle windows only
                 // deliver another request after a wakeup. If demand remains
@@ -2855,10 +2839,6 @@ impl Window {
     /// The current state of the keyboard's capslock
     pub fn capslock(&self) -> Capslock {
         self.capslock
-    }
-
-    fn complete_frame(&self) {
-        self.platform_window.completed_frame();
     }
 
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
@@ -7062,6 +7042,35 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(observed_appearance.get(), Some(WindowAppearance::Dark));
+    }
+
+    #[gpui::test]
+    fn callback_queued_during_a_frame_requests_a_follow_up(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        let test_window = cx.test_window(window.into());
+
+        let callback_ran = Rc::new(Cell::new(false));
+        cx.update_window(window.into(), |_, window, _| {
+            // Inactive windows are frame-rate throttled, which would defer the
+            // ticks this test drives manually.
+            window.active.set(true);
+            let callback_ran = callback_ran.clone();
+            window.on_next_frame(move |window, _| {
+                window.on_next_frame(move |_, _| callback_ran.set(true));
+            });
+        })
+        .unwrap();
+
+        let baseline = test_window.frame_wake_count();
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+        assert!(!callback_ran.get());
+        assert!(
+            test_window.frame_wake_count() > baseline,
+            "a callback queued mid-frame must schedule a follow-up before the loop parks"
+        );
+
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+        assert!(callback_ran.get());
     }
 
     struct RootView {
