@@ -1985,7 +1985,7 @@ impl Default for WindowOptions {
             kind: WindowKind::Normal,
             is_movable: true,
             app_owns_titlebar_drag: false,
-            inactive_frame_interval: Some(Duration::from_micros(33_333)),
+            inactive_frame_interval: None,
             is_resizable: true,
             is_minimizable: true,
             display_id: None,
