@@ -66,6 +66,19 @@ struct LoadedFont {
     variable_weight: Option<u16>,
 }
 
+impl LoadedFont {
+    fn normalized_coords(&self) -> SmallVec<[swash::NormalizedCoord; 4]> {
+        let Some(weight) = self.variable_weight else {
+            return SmallVec::new();
+        };
+        self.font
+            .as_swash()
+            .variations()
+            .normalized_coords([(swash::Tag::from_be_bytes(*b"wght"), weight as f32)])
+            .collect()
+    }
+}
+
 impl CosmicTextSystem {
     pub fn new(system_font_fallback: &str) -> Self {
         let font_system = FontSystem::new();
@@ -148,13 +161,10 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn font_metrics(&self, font_id: FontId) -> FontMetrics {
-        let metrics = self
-            .0
-            .read()
-            .loaded_font(font_id)
-            .font
-            .as_swash()
-            .metrics(&[]);
+        let lock = self.0.read();
+        let loaded_font = lock.loaded_font(font_id);
+        let coords = loaded_font.normalized_coords();
+        let metrics = loaded_font.font.as_swash().metrics(&coords);
 
         FontMetrics {
             units_per_em: metrics.units_per_em as u32,
@@ -174,7 +184,9 @@ impl PlatformTextSystem for CosmicTextSystem {
 
     fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>> {
         let lock = self.0.read();
-        let glyph_metrics = lock.loaded_font(font_id).font.as_swash().glyph_metrics(&[]);
+        let loaded_font = lock.loaded_font(font_id);
+        let coords = loaded_font.normalized_coords();
+        let glyph_metrics = loaded_font.font.as_swash().glyph_metrics(&coords);
         let glyph_id = glyph_id.0 as u16;
         Ok(Bounds {
             origin: point(0.0, 0.0),
@@ -345,7 +357,9 @@ impl CosmicTextSystemState {
     }
 
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
-        let glyph_metrics = self.loaded_font(font_id).font.as_swash().glyph_metrics(&[]);
+        let loaded_font = self.loaded_font(font_id);
+        let coords = loaded_font.normalized_coords();
+        let glyph_metrics = loaded_font.font.as_swash().glyph_metrics(&coords);
         Ok(Size {
             width: glyph_metrics.advance_width(glyph_id.0 as u16),
             height: glyph_metrics.advance_height(glyph_id.0 as u16),
@@ -407,6 +421,7 @@ impl CosmicTextSystemState {
     ) -> Result<swash::scale::image::Image> {
         let loaded_font = &self.loaded_fonts[params.font_id.0];
         let font_ref = loaded_font.font.as_swash();
+        let coords = loaded_font.normalized_coords();
         let pixel_size = f32::from(params.font_size);
 
         let subpixel_offset = Vector::new(
@@ -419,12 +434,8 @@ impl CosmicTextSystemState {
             .builder(font_ref)
             .size(pixel_size * params.scale_factor)
             .hint(true);
-        if let Some(weight) = loaded_font.variable_weight {
-            scaler = scaler.normalized_coords(
-                font_ref
-                    .variations()
-                    .normalized_coords([(swash::Tag::from_be_bytes(*b"wght"), weight as f32)]),
-            );
+        if !coords.is_empty() {
+            scaler = scaler.normalized_coords(coords.iter().copied());
         }
         let mut scaler = scaler.build();
 
