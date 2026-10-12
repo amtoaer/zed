@@ -48,7 +48,7 @@ pub(crate) struct RebuildHandle(Option<AnyView>);
 /// can be built again on its own.
 #[inline(always)]
 pub(crate) fn cached<V: View>(view: V, any: AnyView, style: StyleRefinement) -> ViewElement<V> {
-    ViewElement::new(view).rebuildable(any).cached(style)
+    rebuildable(view, any).cached(style)
 }
 
 /// `view` drawn as a view that can be built again on its own, kept as `any`,
@@ -56,7 +56,8 @@ pub(crate) fn cached<V: View>(view: V, any: AnyView, style: StyleRefinement) -> 
 /// [`AnyView::into_element`](crate::IntoElement::into_element) draw it.
 #[inline(always)]
 pub(crate) fn rebuildable<V: View>(view: V, any: AnyView) -> ViewElement<V> {
-    ViewElement::new(view).rebuildable(any)
+    let view_type_name = any.view_type_name;
+    ViewElement::with_type_name(view, view_type_name).rebuildable(any)
 }
 
 impl<V: View> ViewElement<V> {
