@@ -2682,6 +2682,10 @@ fn get_scale_factor(
         return scale;
     }
 
+    if let Some(scale) = crate::fast::x11_scale::gdk_scale() {
+        return scale;
+    }
+
     if let Some(scale) = get_randr_scale_factor(connection, screen_index) {
         log::info!("Using RandR scale factor: {}", scale);
         return scale;
