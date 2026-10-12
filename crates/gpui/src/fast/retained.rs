@@ -1740,8 +1740,33 @@ pub(crate) fn request_view_layout<V: View>(
     window: &mut Window,
     cx: &mut App,
 ) -> (LayoutId, ViewLayoutState) {
+    #[cfg(feature = "profiler")]
+    let start = view.entity_id.map(|_| window.window_profiler.begin_view());
     let (layout_id, layout) = view.request_view_layout_inner(global_id, window, cx);
+    #[cfg(feature = "profiler")]
+    end_view_profile(
+        view,
+        start,
+        crate::profiler::ViewPhase::RequestLayout,
+        window,
+    );
     (layout_id, ViewLayoutState(layout))
+}
+
+/// Attributes the time since `start` to the view's type in the window's
+/// profiler, as upstream's `ViewElement` does for views with an entity.
+#[cfg(feature = "profiler")]
+fn end_view_profile<V: View>(
+    view: &ViewElement<V>,
+    start: Option<std::time::Instant>,
+    phase: crate::profiler::ViewPhase,
+    window: &mut Window,
+) {
+    if let Some(start) = start {
+        window
+            .window_profiler
+            .end_view(start, view.view_type_name, phase);
+    }
 }
 
 /// Prepaints the view as [`crate::Element::prepaint`] does, following up on how
@@ -1756,7 +1781,12 @@ pub(crate) fn prepaint_view<V: View>(
     cx: &mut App,
 ) -> ViewPrepaintState {
     let layout = mem::replace(&mut layout.0, ViewLayout::Taken);
-    ViewPrepaintState(view.prepaint_view_inner(global_id, bounds, layout, window, cx))
+    #[cfg(feature = "profiler")]
+    let start = view.entity_id.map(|_| window.window_profiler.begin_view());
+    let prepaint = view.prepaint_view_inner(global_id, bounds, layout, window, cx);
+    #[cfg(feature = "profiler")]
+    end_view_profile(view, start, crate::profiler::ViewPhase::Prepaint, window);
+    ViewPrepaintState(prepaint)
 }
 
 /// Paints the view as [`crate::Element::paint`] does.
@@ -1770,7 +1800,11 @@ pub(crate) fn paint_view<V: View>(
 ) {
     if let Some(entity_id) = view.entity_id {
         // Stateful path.
+        #[cfg(feature = "profiler")]
+        let start = window.window_profiler.begin_view();
         paint_entity_view(entity_id, global_id, &mut prepaint.0, window, cx);
+        #[cfg(feature = "profiler")]
+        end_view_profile(view, Some(start), crate::profiler::ViewPhase::Paint, window);
     } else {
         // Stateless path: just paint the element.
         paint_component(std::any::type_name::<V>(), &mut prepaint.0, window, cx);
