@@ -1,23 +1,31 @@
 [package]
-name = "http_client_tls"
-version = "0.1.0"
-edition.workspace = true
-publish.workspace = true
+name = "gpui-pre-http-client-tls"
+version = "0.3.9"
+edition = { workspace = true }
+publish = true
 license = "Apache-2.0"
+description = "Zed's `http_client_tls` crate (gpui-pre snapshot of zed@6cb132a)"
+repository = "https://github.com/zed-industries/zed"
 
-[lints]
-workspace = true
-
-[features]
-test-support = []
+[package.metadata.gpui-pre]
+zed-crate = "http_client_tls"
+zed-version = "0.1.0"
+zed-rev = "6cb132ab5a6f681bf07574502c9f4db7b73c6936"
 
 [lib]
 path = "src/http_client_tls.rs"
 doctest = false
 test = false
+name = "http_client_tls"
+
+[features]
+test-support = []
 
 [dependencies]
 log = { workspace = true, features = ["serde"] }
-rustls.workspace = true
-rustls-platform-verifier.workspace = true
-webpki-roots.workspace = true
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+webpki-roots = { workspace = true }
+
+[lints]
+workspace = true

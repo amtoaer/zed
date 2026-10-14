@@ -1,47 +1,40 @@
 [package]
-name = "http_client"
-version = "0.1.0"
-edition.workspace = true
-publish = false
+name = "gpui-pre-http-client"
+version = "0.3.9"
+edition = { workspace = true }
+publish = true
 license = "Apache-2.0"
-description = "A HTTP client library for Zed and GPUI"
+description = "A HTTP client library for Zed and GPUI (gpui-pre snapshot of zed@6cb132a)"
+repository = "https://github.com/zed-industries/zed"
 
-[lints]
-workspace = true
-
-[features]
-test-support = ["dep:log"]
-github-download = [
-    "dep:async-compression",
-    "dep:async-fs",
-    "dep:async-tar",
-    "dep:sha2",
-    "dep:tempfile",
-    "dep:util",
-]
+[package.metadata.gpui-pre]
+zed-crate = "http_client"
+zed-version = "0.1.0"
+zed-rev = "6cb132ab5a6f681bf07574502c9f4db7b73c6936"
 
 [lib]
 path = "src/http_client.rs"
 doctest = false
+name = "http_client"
+
+[features]
+test-support = ["dep:log"]
 
 [dependencies]
-anyhow.workspace = true
-bytes.workspace = true
-futures.workspace = true
-http-body.workspace = true
-http.workspace = true
+anyhow = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+http-body = { workspace = true }
+http = { workspace = true }
 log = { workspace = true, optional = true }
-parking_lot.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-serde_urlencoded.workspace = true
-url.workspace = true
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = { workspace = true }
+url = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-log.workspace = true
-async-compression = { workspace = true, optional = true }
-util = { workspace = true, optional = true }
-async-fs = { workspace = true, optional = true }
-async-tar = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
-tempfile = { workspace = true, optional = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

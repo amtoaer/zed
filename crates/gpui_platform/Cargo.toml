@@ -1,30 +1,67 @@
 [package]
-name = "gpui_platform"
-version = "0.1.0"
-edition.workspace = true
-publish.workspace = true
+name = "gpui-pre-platform"
+version = "0.3.9"
+edition = { workspace = true }
+publish = true
 license = "Apache-2.0"
+description = "Zed's `gpui_platform` crate (gpui-pre snapshot of zed@6cb132a)"
+repository = "https://github.com/zed-industries/zed"
 
-[lints]
-workspace = true
+[package.metadata.gpui-pre]
+zed-crate = "gpui_platform"
+zed-version = "0.1.0"
+zed-rev = "6cb132ab5a6f681bf07574502c9f4db7b73c6936"
 
 [lib]
 path = "src/gpui_platform.rs"
 doctest = false
+name = "gpui_platform"
 
 [features]
 default = ["multithreaded"]
-# Threads in the browser: needs a nightly toolchain and a cross-origin-isolated
-# page. Off, gpui_web builds on stable.
 multithreaded = ["gpui_web/multithreaded"]
 bench-support = ["gpui/bench-support", "gpui_macos/bench-support", "gpui_wgpu/bench-support"]
 font-kit = ["gpui_macos/font-kit"]
 inspector = ["gpui/inspector"]
-test-support = ["gpui/test-support", "gpui_macos/test-support", "gpui_windows/test-support", "gpui_wgpu/test-support"]
-screen-capture = ["gpui/screen-capture", "gpui_macos/screen-capture", "gpui_windows/screen-capture", "gpui_linux/screen-capture"]
+test-support = [
+    "gpui/test-support",
+    "gpui_macos/test-support",
+    "gpui_windows/test-support",
+    "gpui_wgpu/test-support",
+]
+screen-capture = [
+    "gpui/screen-capture",
+    "gpui_macos/screen-capture",
+    "gpui_windows/screen-capture",
+    "gpui_linux/screen-capture",
+]
 runtime_shaders = ["gpui_macos/runtime_shaders"]
 wayland = ["gpui_linux/wayland"]
 x11 = ["gpui_linux/x11"]
+
+[dependencies]
+anyhow = { workspace = true }
+gpui = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_macos = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_windows = { workspace = true }
+gpui = { workspace = true, features = ["windows-manifest"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_linux = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_wgpu = { workspace = true, optional = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+gpui_web = { workspace = true }
+console_error_panic_hook = { workspace = true }
+
+[lints]
+workspace = true
 
 [[bench]]
 name = "inspector_render"
@@ -35,28 +72,3 @@ required-features = ["bench-support"]
 name = "randomized_element_tree"
 harness = false
 required-features = ["bench-support"]
-
-[dependencies]
-anyhow.workspace = true
-gpui.workspace = true
-
-[dev-dependencies]
-bench_metrics.workspace = true
-criterion.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-gpui_macos.workspace = true
-
-[target.'cfg(target_os = "windows")'.dependencies]
-gpui_windows.workspace = true
-gpui = { workspace = true, features = ["windows-manifest"] }
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui_linux.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-gpui_wgpu = { workspace = true, optional = true }
-
-[target.'cfg(target_family = "wasm")'.dependencies]
-gpui_web.workspace = true
-console_error_panic_hook.workspace = true
