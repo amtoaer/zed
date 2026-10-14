@@ -37,9 +37,9 @@ use gpui::{
     AnyWindowHandle, Bounds, Capslock, Decorations, DevicePixels, ExternalDragPayload,
     FrameRequestSource, GpuSpecs, Modifiers, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformFrameSignal, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
-    PromptLevel, RequestFrameOptions, ResizeEdge, Scene, Size, Tiling, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
-    WindowKind, WindowParams, WindowVisibility,
+    PromptLevel, RequestFrameOptions, ResizeEdge, Scene, SceneDamage, Size, Tiling,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
+    WindowDecorations, WindowKind, WindowParams, WindowVisibility,
     layer_shell::{Anchor, LayerShellNotSupportedError},
     popup::PopupOptions,
     px, size,
@@ -826,6 +826,57 @@ impl WaylandWindow {
 
     fn borrow_mut(&self) -> RefMut<'_, WaylandWindowState> {
         self.0.state.borrow_mut()
+    }
+
+    fn draw_impl(&self, scene: &Scene, damage: Option<&SceneDamage>) {
+        let mut state = self.borrow_mut();
+        let state = &mut *state;
+        let Some(renderer) = &mut state.renderer else {
+            return;
+        };
+
+        if renderer.device_lost() {
+            let raw_window = RawWindow {
+                window: state.surface.id().as_ptr().cast::<std::ffi::c_void>(),
+                display: state
+                    .surface
+                    .backend()
+                    .upgrade()
+                    .unwrap()
+                    .display_ptr()
+                    .cast::<std::ffi::c_void>(),
+            };
+            match renderer.recover(&raw_window) {
+                Ok(()) => {}
+                Err(err) => {
+                    log::warn!("GPU recovery failed, will retry on next frame: {err}");
+                }
+            }
+
+            state.redraw_requested = true;
+            return;
+        }
+
+        // Surface state changed during this GPUI tick is included in this presentation.
+        state.redraw_requested = false;
+        if state.pending_frame_callback.is_none() {
+            let callback = state.surface.frame(&state.globals.qh, state.surface.id());
+            state.pending_frame_callback = Some(callback);
+        }
+        if match damage {
+            Some(damage) => renderer.draw_with_damage(scene, damage),
+            None => renderer.draw(scene),
+        } {
+            state.presentation = PresentationState::Presented;
+            self.0.frame_loop.set(FrameLoop::AwaitingCallback);
+        } else {
+            state.presentation = state.presentation.failed();
+            self.0.frame_loop.set(FrameLoop::PresentationFailed);
+        }
+
+        if renderer.needs_redraw() {
+            state.redraw_requested = true;
+        }
     }
 
     pub fn new(
@@ -2009,51 +2060,11 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn draw(&self, scene: &Scene) {
-        let mut state = self.borrow_mut();
-        let state = &mut *state;
-        let Some(renderer) = &mut state.renderer else {
-            return;
-        };
+        self.draw_impl(scene, None);
+    }
 
-        if renderer.device_lost() {
-            let raw_window = RawWindow {
-                window: state.surface.id().as_ptr().cast::<std::ffi::c_void>(),
-                display: state
-                    .surface
-                    .backend()
-                    .upgrade()
-                    .unwrap()
-                    .display_ptr()
-                    .cast::<std::ffi::c_void>(),
-            };
-            match renderer.recover(&raw_window) {
-                Ok(()) => {}
-                Err(err) => {
-                    log::warn!("GPU recovery failed, will retry on next frame: {err}");
-                }
-            }
-
-            state.redraw_requested = true;
-            return;
-        }
-
-        // Surface state changed during this GPUI tick is included in this presentation.
-        state.redraw_requested = false;
-        if state.pending_frame_callback.is_none() {
-            let callback = state.surface.frame(&state.globals.qh, state.surface.id());
-            state.pending_frame_callback = Some(callback);
-        }
-        if renderer.draw(scene) {
-            state.presentation = PresentationState::Presented;
-            self.0.frame_loop.set(FrameLoop::AwaitingCallback);
-        } else {
-            state.presentation = state.presentation.failed();
-            self.0.frame_loop.set(FrameLoop::PresentationFailed);
-        }
-
-        if renderer.needs_redraw() {
-            state.redraw_requested = true;
-        }
+    fn draw_with_damage(&self, scene: &Scene, damage: &SceneDamage) {
+        self.draw_impl(scene, Some(damage));
     }
 
     fn schedule_frame(&self) {

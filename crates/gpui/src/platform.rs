@@ -40,9 +40,9 @@ use crate::{
     DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Edges, ExternalDragPayload, Font,
     FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs, Hsla, ImageSource, Keymap,
     LineLayout, MissingGlyphSink, Pixels, PlatformGestures, PlatformInput, Point, Priority,
-    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene, ShapedGlyph,
-    ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window, WindowControlArea,
-    hash, point, px, size,
+    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene, SceneDamage,
+    ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window,
+    WindowControlArea, hash, point, px, size,
 };
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use anyhow::bail;
@@ -1274,6 +1274,15 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
     fn draw(&self, scene: &Scene);
+    /// Like [`Self::draw`], but with a hint describing which region of the
+    /// scene changed since the scene most recently drawn. Backends may use
+    /// the damage to re-render only the changed region; the default
+    /// implementation ignores it and re-renders everything. The damage is a
+    /// conservative over-approximation and never under-reports.
+    // todo(gpui): Merge this function with draw once partial render isn't flagged
+    fn draw_with_damage(&self, scene: &Scene, _damage: &SceneDamage) {
+        self.draw(scene);
+    }
     fn schedule_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
     fn is_subpixel_rendering_supported(&self) -> bool;
@@ -2673,7 +2682,7 @@ impl Default for WindowOptions {
             kind: WindowKind::Normal,
             is_movable: true,
             app_owns_titlebar_drag: false,
-            inactive_frame_interval: Some(Duration::from_micros(33_333)),
+            inactive_frame_interval: None,
             is_resizable: true,
             is_minimizable: true,
             display_id: None,

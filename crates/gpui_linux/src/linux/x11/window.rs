@@ -5,10 +5,10 @@ use crate::linux::X11ClientStatePtr;
 use gpui::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers,
     Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size,
-    Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
-    WindowDecorations, WindowKind, WindowParams, WindowVisibility, popup::PopupNotSupportedError,
-    px,
+    Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene,
+    SceneDamage, Size, Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowDecorations, WindowKind, WindowParams, WindowVisibility,
+    popup::PopupNotSupportedError, px,
 };
 use gpui_wgpu::{CompositorGpuHint, WgpuRenderer, WgpuSurfaceConfig};
 
@@ -918,6 +918,43 @@ enum WmHintPropertyState {
 }
 
 impl X11Window {
+    fn draw_impl(&self, scene: &Scene, damage: Option<&SceneDamage>) {
+        let mut inner = self.0.state.borrow_mut();
+        let inner = &mut *inner;
+        let Some(renderer) = &mut inner.renderer else {
+            return;
+        };
+
+        if renderer.device_lost() {
+            let raw_window = RawWindow {
+                connection: as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(
+                    &*self.0.xcb,
+                ) as *mut _,
+                screen_id: inner.x_screen_index,
+                window_id: self.0.x_window,
+                visual_id: inner.visual_id,
+            };
+            match renderer.recover(&raw_window) {
+                Ok(()) => {}
+                Err(err) => {
+                    log::warn!("GPU recovery failed, will retry on next frame: {err}");
+                }
+            }
+
+            inner.force_render_after_recovery = true;
+            return;
+        }
+
+        match damage {
+            Some(damage) => renderer.draw_with_damage(scene, damage),
+            None => renderer.draw(scene),
+        };
+
+        if renderer.needs_redraw() {
+            inner.force_render_after_recovery = true;
+        }
+    }
+
     pub fn new(
         handle: AnyWindowHandle,
         client: X11ClientStatePtr,
@@ -1749,37 +1786,11 @@ impl PlatformWindow for X11Window {
     }
 
     fn draw(&self, scene: &Scene) {
-        let mut inner = self.0.state.borrow_mut();
-        let inner = &mut *inner;
-        let Some(renderer) = &mut inner.renderer else {
-            return;
-        };
+        self.draw_impl(scene, None);
+    }
 
-        if renderer.device_lost() {
-            let raw_window = RawWindow {
-                connection: as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(
-                    &*self.0.xcb,
-                ) as *mut _,
-                screen_id: inner.x_screen_index,
-                window_id: self.0.x_window,
-                visual_id: inner.visual_id,
-            };
-            match renderer.recover(&raw_window) {
-                Ok(()) => {}
-                Err(err) => {
-                    log::warn!("GPU recovery failed, will retry on next frame: {err}");
-                }
-            }
-
-            inner.force_render_after_recovery = true;
-            return;
-        }
-
-        renderer.draw(scene);
-
-        if renderer.needs_redraw() {
-            inner.force_render_after_recovery = true;
-        }
+    fn draw_with_damage(&self, scene: &Scene, damage: &SceneDamage) {
+        self.draw_impl(scene, Some(damage));
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

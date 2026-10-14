@@ -120,6 +120,45 @@ impl DispatchPhase {
     }
 }
 
+/// Whether unchanged frames may skip presentation (and re-presentation of
+/// unchanged content may be skipped). Experimental; on by default, set
+/// `GPUI_EXPERIMENTAL_PRESENT_SKIP=0` to disable. Always disabled in
+/// benchmarks, which measure per-frame renderer submission and rely on every
+/// drawn frame being presented.
+pub(crate) fn present_skip_enabled() -> bool {
+    if cfg!(feature = "bench") {
+        return false;
+    }
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("GPUI_EXPERIMENTAL_PRESENT_SKIP").map_or(true, |value| {
+            value != "0"
+                && !value.is_empty()
+                && !value.eq_ignore_ascii_case("false")
+                && !value.eq_ignore_ascii_case("off")
+        })
+    })
+}
+
+/// Whether presentation passes scene damage to the renderer so backends that
+/// support it can re-render only the changed region. Experimental; on by
+/// default, set `GPUI_EXPERIMENTAL_PARTIAL_RENDER=0` to disable. Always
+/// disabled in benchmarks, which measure full-scene renderer submission.
+pub(crate) fn partial_render_enabled() -> bool {
+    if cfg!(feature = "bench") {
+        return false;
+    }
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("GPUI_EXPERIMENTAL_PARTIAL_RENDER").map_or(true, |value| {
+            value != "0"
+                && !value.is_empty()
+                && !value.eq_ignore_ascii_case("false")
+                && !value.eq_ignore_ascii_case("off")
+        })
+    })
+}
+
 struct WindowInvalidatorInner {
     #[cfg(feature = "profiler")]
     pub window_id: WindowId,
@@ -1271,8 +1310,17 @@ pub struct Window {
     visibility: WindowVisibility,
     pub(crate) visibility_observers:
         SubscriberSet<(), Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
+    inactive_frame_interval: Rc<Cell<Option<Duration>>>,
     hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
+    /// Whether this window has ever presented a frame. Present-skipping is
+    /// disabled until the first present: on some platforms (e.g. Wayland) a
+    /// window isn't mapped until a buffer is attached.
+    presented: bool,
+    /// The scene damage of `rendered_frame` relative to the most recently
+    /// presented scene, passed to the renderer at present time so it can
+    /// re-render only the changed region.
+    pending_damage: crate::SceneDamage,
     /// Tracks recent input event timestamps to determine if input is arriving at a high rate.
     /// Used to selectively enable VRR optimization only when input rate exceeds 60fps.
     pub(crate) input_rate_tracker: Rc<RefCell<InputRateTracker>>,
@@ -1647,6 +1695,7 @@ impl Window {
         let visibility = platform_window.visibility();
         #[cfg(feature = "profiler")]
         profiler::journal::record_window_visibility(handle.window_id(), visibility);
+        let inactive_frame_interval = Rc::new(Cell::new(inactive_frame_interval));
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
@@ -1761,6 +1810,7 @@ impl Window {
             let mut cx = cx.to_async();
             let invalidator = invalidator.clone();
             let active = active.clone();
+            let inactive_frame_interval = inactive_frame_interval.clone();
             let needs_present = needs_present.clone();
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
@@ -1812,14 +1862,16 @@ impl Window {
 
                 // Throttle frame rate based on conditions:
                 // - Thermal pressure (Serious/Critical): cap to ~60fps
-                // - Inactive window (not focused): cap to ~30fps to save energy
+                // - Inactive window (not focused): use the configured frame interval
                 let min_frame_interval = if request_frame_options.require_presentation
                     || (!request_frame_options.force_render
                         && next_frame_callbacks.borrow().is_empty())
                 {
                     None
                 } else if !active.get() && !input_rate_tracker.borrow_mut().is_high_rate() {
-                    inactive_frame_interval.map(|interval| (interval, FrameRateLimit::Inactive))
+                    inactive_frame_interval
+                        .get()
+                        .map(|interval| (interval, FrameRateLimit::Inactive))
                 } else if let Some(ThermalState::Critical | ThermalState::Serious) = thermal_state {
                     Some((Duration::from_micros(16667), FrameRateLimit::Thermal))
                 } else {
@@ -1876,10 +1928,14 @@ impl Window {
 
                 // Keep presenting if input was recently arriving at a high rate (>= 60fps).
                 // Once high-rate input is detected, we sustain presentation for 1 second
-                // to prevent display underclocking during active input.
+                // to prevent display underclocking during active input. Each of these
+                // presents re-renders the full scene on the GPU even though its content
+                // is by definition unchanged (changed content takes the dirty->draw path
+                // above), so when present-skipping is enabled we drop the sustain and
+                // let the GPU idle instead.
                 let needs_present = request_frame_options.require_presentation
                     || needs_present.get()
-                    || input_rate_tracker.borrow_mut().is_high_rate();
+                    || (!present_skip_enabled() && input_rate_tracker.borrow_mut().is_high_rate());
 
                 let should_draw = invalidator.is_dirty() || force_render;
                 if should_draw {
@@ -1896,7 +1952,15 @@ impl Window {
                                     window.refresh();
                                 }
                                 let arena_clear_needed = window.draw(cx);
-                                window.present();
+                                // `draw` clears `needs_present` when the new scene is
+                                // identical to what's already on screen. Presentation is
+                                // still required when the platform reports the displayed
+                                // buffer itself is damaged (e.g. an X11 expose event).
+                                if window.needs_present.get()
+                                    || request_frame_options.require_presentation
+                                {
+                                    window.present();
+                                }
                                 arena_clear_needed.clear(cx);
                             })
                             .log_err();
@@ -2170,8 +2234,11 @@ impl Window {
             active,
             visibility,
             visibility_observers: SubscriberSet::new(),
+            inactive_frame_interval,
             hovered,
             needs_present,
+            presented: false,
+            pending_damage: crate::SceneDamage::Full,
             input_rate_tracker,
             #[cfg(feature = "profiler")]
             window_profiler: profiler::WindowProfiler::new(handle.window_id())?,
@@ -2974,6 +3041,15 @@ impl Window {
         self.active.get()
     }
 
+    /// Sets the minimum interval between animation frames while this window is inactive.
+    ///
+    /// Set to `None` to disable inactive-window animation frame throttling.
+    pub fn set_inactive_frame_interval(&mut self, interval: Option<Duration>) {
+        if self.inactive_frame_interval.replace(interval) != interval {
+            self.invalidator.wake_platform();
+        }
+    }
+
     /// Returns whether this window is considered to be the window
     /// that currently owns the mouse cursor.
     /// On mac, this is equivalent to `is_window_active`.
@@ -3507,6 +3583,19 @@ impl Window {
         self.text_system().finish_frame();
         self.next_frame.finish(&mut self.rendered_frame);
 
+        // Diff the scenes here, while the previous frame's scene is still
+        // intact: it's cleared right after the swap below.
+        let scene_damage = (present_skip_enabled() || partial_render_enabled()).then(|| {
+            if self.refreshing {
+                // Resizes, appearance changes, and GPU device recovery
+                // invalidate the presented buffer, so the frame must be
+                // presented even when the scene itself is unchanged.
+                crate::SceneDamage::Full
+            } else {
+                crate::SceneDamage::between(&self.rendered_frame.scene, &self.next_frame.scene)
+            }
+        });
+
         self.invalidator.set_phase(DrawPhase::Focus);
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
@@ -3561,7 +3650,20 @@ impl Window {
         if self.focus != focus_before_listeners {
             self.refresh();
         }
-        self.needs_present.set(true);
+
+        // When the new scene is identical to what's already on screen,
+        // presenting it would only make the GPU re-render identical pixels, so
+        // skip it. Never skip before the first successful present: on some
+        // platforms (e.g. Wayland) a window isn't mapped until a buffer is
+        // attached.
+        let skip_present = present_skip_enabled()
+            && self.presented
+            && matches!(&scene_damage, Some(crate::SceneDamage::Unchanged));
+        self.needs_present.set(!skip_present);
+
+        // Stash the damage for `present` to hand to the renderer. When no
+        // diff was computed, everything may have changed.
+        self.pending_damage = scene_damage.unwrap_or(crate::SceneDamage::Full);
 
         #[cfg(feature = "profiler")]
         {
@@ -3606,7 +3708,18 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.platform_window.draw(&self.rendered_frame.scene);
+        // After a successful present the renderer is caught up with
+        // `rendered_frame`, so a re-present of the same scene (e.g. for an
+        // expose event) carries no damage. Renderers accumulate damage
+        // internally across their own failed or skipped frames.
+        let damage = mem::replace(&mut self.pending_damage, crate::SceneDamage::Unchanged);
+        if partial_render_enabled() {
+            self.platform_window
+                .draw_with_damage(&self.rendered_frame.scene, &damage);
+        } else {
+            self.platform_window.draw(&self.rendered_frame.scene);
+        }
+        self.presented = true;
         #[cfg(feature = "profiler")]
         self.window_profiler.record_present(
             present_start,
@@ -4826,6 +4939,29 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
     ) -> Result<()> {
+        self.paint_glyph_with_transformation(
+            origin,
+            font_id,
+            glyph_id,
+            font_size,
+            TransformationMatrix::unit(),
+            color,
+        )
+    }
+
+    /// Paints a monochrome glyph with a transformation applied to its sprite.
+    ///
+    /// The glyph is rasterized at `font_size`; the transformation only affects the resulting
+    /// sprite, allowing animated scaling without creating additional glyph atlas entries.
+    pub fn paint_glyph_with_transformation(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        transformation: TransformationMatrix,
+        color: Hsla,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
@@ -4879,7 +5015,7 @@ impl Window {
                     content_mask,
                     color: color.opacity(element_opacity),
                     tile,
-                    transformation: TransformationMatrix::unit(),
+                    transformation,
                 });
             } else {
                 self.next_frame.scene.insert_primitive(MonochromeSprite {
@@ -4889,7 +5025,7 @@ impl Window {
                     content_mask,
                     color: color.opacity(element_opacity),
                     tile,
-                    transformation: TransformationMatrix::unit(),
+                    transformation,
                 });
             }
         }
