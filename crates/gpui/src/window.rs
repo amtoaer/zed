@@ -3651,6 +3651,11 @@ impl Window {
             self.refresh();
         }
 
+        // Input dispatch can draw several scenes before presentation. Keep all
+        // their damage until present hands it to the renderer.
+        let pending_damage = mem::replace(&mut self.pending_damage, crate::SceneDamage::Unchanged);
+        self.pending_damage = pending_damage.union(scene_damage.unwrap_or(crate::SceneDamage::Full));
+
         // When the new scene is identical to what's already on screen,
         // presenting it would only make the GPU re-render identical pixels, so
         // skip it. Never skip before the first successful present: on some
@@ -3658,12 +3663,8 @@ impl Window {
         // attached.
         let skip_present = present_skip_enabled()
             && self.presented
-            && matches!(&scene_damage, Some(crate::SceneDamage::Unchanged));
+            && matches!(&self.pending_damage, crate::SceneDamage::Unchanged);
         self.needs_present.set(!skip_present);
-
-        // Stash the damage for `present` to hand to the renderer. When no
-        // diff was computed, everything may have changed.
-        self.pending_damage = scene_damage.unwrap_or(crate::SceneDamage::Full);
 
         #[cfg(feature = "profiler")]
         {
@@ -8410,6 +8411,77 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_damage_accumulates_until_present(cx: &mut TestAppContext) {
+        struct DamageView(f32);
+
+        impl Render for DamageView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    div()
+                        .absolute()
+                        .left(px(self.0))
+                        .top(px(20.))
+                        .size(px(10.))
+                        .bg(crate::rgb(0xffffff)),
+                )
+            }
+        }
+
+        cx.app.borrow_mut().mode = crate::app::GpuiMode::Production;
+        for next_x in [60., 100.] {
+            let handle = cx.add_window(|_, _| DamageView(20.));
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                window.present();
+            })
+            .unwrap();
+            handle
+                .update(cx, |view, _, cx| {
+                    view.0 = 60.;
+                    cx.notify();
+                })
+                .unwrap();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+            handle
+                .update(cx, |view, _, cx| {
+                    view.0 = next_x;
+                    cx.notify();
+                })
+                .unwrap();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                assert!(
+                    window.needs_present.get(),
+                    "unpresented changes must not be skipped"
+                );
+                for x in [25., 65., next_x + 5.] {
+                    assert!(
+                        window
+                            .pending_damage
+                            .contains_point(&point(px(x), px(25.)).scale(window.scale_factor())),
+                        "earlier damage was lost: {:?}",
+                        window.pending_damage
+                    );
+                }
+                window.present();
+                assert!(matches!(
+                    window.pending_damage,
+                    crate::SceneDamage::Unchanged
+                ));
+                window.draw(cx).clear(cx);
+                assert!(
+                    !window.needs_present.get(),
+                    "an unchanged presented scene should still be skipped"
+                );
+            })
+            .unwrap();
+        }
     }
 
     struct EmptyView;
