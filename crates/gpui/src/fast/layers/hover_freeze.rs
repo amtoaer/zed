@@ -13,7 +13,8 @@
 //! drawn again, and hover follows the pointer as before. A pointer that moves
 //! ends the freeze at once.
 
-use std::time::{Duration, Instant};
+use scheduler::Instant;
+use std::time::Duration;
 
 use crate::{App, HitTest, Pixels, Point, Window};
 

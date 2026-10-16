@@ -1863,7 +1863,7 @@ pub(crate) fn request_view_layout<V: View>(
 #[cfg(feature = "profiler")]
 fn end_view_profile<V: View>(
     view: &ViewElement<V>,
-    start: Option<std::time::Instant>,
+    start: Option<scheduler::Instant>,
     phase: crate::profiler::ViewPhase,
     window: &mut Window,
 ) {
