@@ -21,7 +21,8 @@ use crate::fast::splice::{Prebuilt, Rebuild, Splice, SplicedPrepaint};
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
-    HitboxId, IntoElement, LayoutId, Pixels, Size, Style, TextStyle, View, ViewElement, Window,
+    HitboxId, LayoutId, Pixels, PlatformInputHandler, Size, Style, TextStyle, View, ViewElement,
+    Window,
 };
 use collections::{FxHashMap, FxHashSet};
 use refineable::Refineable;
@@ -45,6 +46,23 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
 #[inline(always)]
 pub(crate) fn draw_outside_frames(window: &mut Window) {
     window.refreshing = true;
+}
+
+/// Forwarded to by `Window::draw` as it hands the platform this frame's input
+/// handler.
+pub(crate) fn note_installed_input_handler(window: &mut Window, handler: &PlatformInputHandler) {
+    window.retained_state.installed_input_focus = Some(handler.focus_id());
+}
+
+/// Forwarded to by `Window::draw` as it takes back the input handler it gave
+/// the platform. A view drawn again from last frame hands the platform that
+/// handler again, which is only right if it is the one GPUI gave it: when
+/// the platform hands back another, nothing is drawn again from last frame,
+/// so the views that paint input handlers paint them anew.
+pub(crate) fn note_restored_input_handler(window: &mut Window, handler: &PlatformInputHandler) {
+    if window.retained_state.installed_input_focus != Some(handler.focus_id()) {
+        window.refreshing = true;
+    }
 }
 
 /// The retained subtrees being prepainted right now, for something deferred
@@ -254,6 +272,9 @@ pub(crate) struct RetainedState {
     /// handed the elements it built, rather than what they wrote as they
     /// were laid out. See [`note_rendered`].
     pub(crate) render_writes: FxHashMap<EntityId, Range<u64>>,
+    /// The focus of the input handler last given to the platform window, if
+    /// one was. See [`note_restored_input_handler`].
+    pub(crate) installed_input_focus: Option<Option<crate::FocusId>>,
 }
 
 impl RetainedState {
@@ -272,6 +293,7 @@ impl RetainedState {
             splice_keys: FxHashSet::default(),
             rendering_since: FxHashMap::default(),
             render_writes: FxHashMap::default(),
+            installed_input_focus: None,
         }
     }
 
@@ -1493,12 +1515,8 @@ impl<V: View> ViewElement<V> {
                         }
                         let start = note_rendering(window, cx, entity_id);
                         let mut recording = window.begin_retained_layout(cx);
-                        let mut element = self
-                            .view
-                            .take()
-                            .unwrap()
-                            .render(window, cx)
-                            .into_any_element();
+                        let mut element =
+                            crate::view::render_view(self.view.take().unwrap(), window, cx);
                         note_rendered(window, cx, entity_id, start);
                         recording.rendered(cx);
                         let layout_id = element.request_layout(window, cx);
@@ -1512,12 +1530,8 @@ impl<V: View> ViewElement<V> {
                         )
                     }
                     _ => {
-                        let mut element = self
-                            .view
-                            .take()
-                            .unwrap()
-                            .render(window, cx)
-                            .into_any_element();
+                        let mut element =
+                            crate::view::render_view(self.view.take().unwrap(), window, cx);
                         let layout_id = element.request_layout(window, cx);
                         (
                             layout_id,
@@ -1534,12 +1548,8 @@ impl<V: View> ViewElement<V> {
             window.with_id(
                 ElementId::Name(std::any::type_name::<V>().into()),
                 |window| {
-                    let mut element = self
-                        .view
-                        .take()
-                        .unwrap()
-                        .render(window, cx)
-                        .into_any_element();
+                    let mut element =
+                        crate::view::render_view(self.view.take().unwrap(), window, cx);
                     let layout_id = element.request_layout(window, cx);
                     (
                         layout_id,
@@ -1676,12 +1686,8 @@ impl<V: View> ViewElement<V> {
                     }
                     let start = note_rendering(window, cx, entity_id);
                     let recording = window.begin_retained(global_id, cx);
-                    let mut element = self
-                        .view
-                        .take()
-                        .unwrap()
-                        .render(window, cx)
-                        .into_any_element();
+                    let mut element =
+                        crate::view::render_view(self.view.take().unwrap(), window, cx);
                     note_rendered(window, cx, entity_id, start);
                     let render = recording.rendered(cx);
                     element.layout_as_root(bounds.size.into(), window, cx);
@@ -1757,7 +1763,7 @@ impl<V: View> ViewElement<V> {
         let start = entity_id.map(|entity_id| note_rendering(window, cx, entity_id));
         let view = self.view.take().unwrap();
         let (mut element, layout_id) = window.with_layout_key_of_prepainting_element(|window| {
-            let mut element = view.render(window, cx).into_any_element();
+            let mut element = crate::view::render_view(view, window, cx);
             if let (Some(entity_id), Some(start)) = (entity_id, start) {
                 note_rendered(window, cx, entity_id, start);
             }

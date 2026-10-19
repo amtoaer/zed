@@ -303,6 +303,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             }))?;
             let (device, queue) =
                 gpui::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
@@ -311,7 +312,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 .formats
                 .iter()
                 .copied()
-                .find(|format| !format.is_srgb())
+                .find(|format| !format.has_srgb_suffix())
                 .or_else(|| capabilities.formats.first().copied())
                 .ok_or_else(|| anyhow::anyhow!("native surface has no supported formats"))?;
             // Presenting must not wait for the compositor, since it runs on
@@ -328,6 +329,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 present_mode,
                 desired_maximum_frame_latency: 2,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                color_space: wgpu::SurfaceColorSpace::Auto,
                 view_formats: Vec::new(),
             };
 
@@ -460,7 +462,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 pass.draw(0..3, 0..1);
             }
             self.queue.submit([encoder.finish()]);
-            frame.present();
+            self.queue.present(frame);
         }
     }
 

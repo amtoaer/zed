@@ -865,6 +865,7 @@ impl Harness {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .ok()?;
         let (device, queue, dual_source_blending, color_texture_format) =
@@ -1180,7 +1181,7 @@ pub(super) fn read_back(
             timeout: None,
         })
         .expect("device polled");
-    let mapped = slice.get_mapped_range();
+    let mapped = slice.get_mapped_range().expect("buffer mapped");
     let mut pixels = Vec::with_capacity((row * height) as usize);
     for y in 0..height {
         let start = (y * padded_row) as usize;
