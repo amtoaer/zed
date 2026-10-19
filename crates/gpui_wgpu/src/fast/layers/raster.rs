@@ -76,6 +76,8 @@ pub(crate) fn rasterize(
         state,
         encoder,
         &SceneDraw {
+            damage_regions: &[],
+            damage_clear: None,
             scene: &tile.scene,
             upload,
             paths,

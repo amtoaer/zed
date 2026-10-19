@@ -60,6 +60,8 @@ const MAX_GROUP_PATH_BATCHES: usize = 64;
 /// The renderer's state that outlives a frame.
 #[derive(Default)]
 pub(crate) struct FrameState {
+    pub(crate) damage_regions: Vec<crate::fast::damage::ScissorRect>,
+    damage_clear: Option<wgpu::RenderPipeline>,
     pub(crate) bind_groups: BindGroupCache,
     pub(crate) globals: UploadedGlobals,
     pub(crate) layers: TileCache,
@@ -324,6 +326,9 @@ fn record_with(
         .and_then(|(uploads, paths)| {
             let target = host.target()?;
             state.layers.prepare(&target, &scene.layers, &planned);
+            if !state.damage_regions.is_empty() && state.damage_clear.is_none() {
+                state.damage_clear = Some(crate::fast::damage::clear_pipeline(target.device, target.format));
+            }
             Ok(record(
                 &target, state, scene, frame_view, clear, &rasters, &raster_indices, &scenes, &uploads, &paths,
             ))
@@ -627,7 +632,9 @@ fn record(
             paths,
             path_batches: &scenes[main].path_batches,
             view: frame_view,
-            clear: Some(clear),
+            clear: state.damage_regions.is_empty().then_some(clear),
+            damage_regions: &state.damage_regions,
+            damage_clear: state.damage_clear.as_ref(),
             label: "main_pass",
             globals: target.globals_bind_group,
             path_targets: PathTargets {
@@ -643,6 +650,8 @@ fn record(
 
 /// A scene to draw, where, and with what.
 pub(crate) struct SceneDraw<'a> {
+    pub(crate) damage_regions: &'a [crate::fast::damage::ScissorRect],
+    pub(crate) damage_clear: Option<&'a wgpu::RenderPipeline>,
     pub(crate) scene: &'a Scene,
     pub(crate) upload: &'a SceneUpload,
     pub(crate) paths: &'a PathUpload,
@@ -811,6 +820,10 @@ pub(crate) fn draw_scene(
         .then_some(step.path_key())
     });
     let mut pass = begin_main_pass(encoder, draw.view, draw.label, draw.clear);
+    if !draw.damage_regions.is_empty() {
+        pass.set_pipeline(draw.damage_clear.expect("partial clear pipeline"));
+        crate::fast::damage::draw_regions(&mut pass, draw.damage_regions, 0..3, 0..1);
+    }
     let mut bound = PassState::default();
     for step in steps {
         let path_key = step.path_key();
@@ -830,6 +843,7 @@ pub(crate) fn draw_scene(
                 &upload.quads,
                 None,
                 range,
+                draw.damage_regions,
             ),
             PrimitiveBatch::Shadows(range) => draw_batch(
                 &mut pass,
@@ -839,6 +853,7 @@ pub(crate) fn draw_scene(
                 &upload.shadows,
                 None,
                 range,
+                draw.damage_regions,
             ),
             PrimitiveBatch::Paths(range) => {
                 if range.is_empty() {
@@ -871,7 +886,9 @@ pub(crate) fn draw_scene(
                 bound.set_bind_group(&mut pass, 0, draw.globals);
                 bound.set_bind_group(&mut pass, 1, &draw.paths.sprites.group);
                 bound.set_bind_group(&mut pass, 2, intermediate);
-                pass.draw(
+                crate::fast::damage::draw_regions(
+                    &mut pass,
+                    draw.damage_regions,
                     0..4,
                     (draw.paths.sprites.first + batch.sprites.start)
                         ..(draw.paths.sprites.first + batch.sprites.end),
@@ -885,6 +902,7 @@ pub(crate) fn draw_scene(
                 &upload.underlines,
                 None,
                 range,
+                draw.damage_regions,
             ),
             PrimitiveBatch::MonochromeSprites { texture_id, range } => {
                 let Some(texture) = atlas_bind_group(target.atlas, &texture_bind_group, texture_id)
@@ -899,6 +917,7 @@ pub(crate) fn draw_scene(
                     &upload.monochrome_sprites,
                     Some(&texture),
                     range,
+                    draw.damage_regions,
                 );
             }
             PrimitiveBatch::SubpixelSprites { texture_id, range } => {
@@ -917,6 +936,7 @@ pub(crate) fn draw_scene(
                     &upload.subpixel_sprites,
                     Some(&texture),
                     range,
+                    draw.damage_regions,
                 );
             }
             PrimitiveBatch::PolychromeSprites { texture_id, range }
@@ -939,6 +959,7 @@ pub(crate) fn draw_scene(
                         &upload.polychrome_sprites,
                         Some(&texture_bind_group("layer_tile_bind_group", view)),
                         run,
+                        draw.damage_regions,
                     );
                 }
             }
@@ -955,6 +976,7 @@ pub(crate) fn draw_scene(
                     &upload.polychrome_sprites,
                     Some(&texture),
                     range,
+                    draw.damage_regions,
                 );
             }
             // Surfaces are macOS-only for video playback and are not
@@ -1006,6 +1028,7 @@ fn begin_main_pass<'a>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_batch(
     pass: &mut wgpu::RenderPass<'_>,
     state: &mut PassState,
@@ -1014,6 +1037,7 @@ fn draw_batch(
     instances: &InstanceBinding,
     texture: Option<&wgpu::BindGroup>,
     range: Range<usize>,
+    regions: &[crate::fast::damage::ScissorRect],
 ) {
     if range.is_empty() {
         return;
@@ -1024,7 +1048,9 @@ fn draw_batch(
     if let Some(texture) = texture {
         state.set_bind_group(pass, 2, texture);
     }
-    pass.draw(
+    crate::fast::damage::draw_regions(
+        pass,
+        regions,
         0..4,
         (instances.first + range.start as u32)..(instances.first + range.end as u32),
     );

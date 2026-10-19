@@ -54,6 +54,8 @@ pub mod queue;
 #[cfg(any(test, feature = "bench-support"))]
 pub mod randomized_element_tree;
 mod scene;
+pub use fast::damage::DamageRects;
+pub use fast::damage::SceneDamage;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 mod seeds;
 mod shared_uri;

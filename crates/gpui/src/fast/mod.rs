@@ -41,3 +41,7 @@ pub(crate) mod text_style;
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod damage;
+
+pub(crate) mod damage_window;

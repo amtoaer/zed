@@ -1348,12 +1348,16 @@ fn synchronize_geometry(window: &mut Window) {
     }
 }
 
+pub(crate) fn is_enabled(window: &Window) -> bool {
+    window.fast_composition.0.borrow().enabled
+}
+
 /// Presents the frame last drawn: on its one surface, or split along the
 /// composition tree once the window composes.
 pub(crate) fn present(window: &mut Window) {
     let state = window.fast_composition.0.clone();
     if !state.borrow().enabled {
-        window.platform_window.draw(&window.rendered_frame.scene);
+        crate::fast::damage_window::present(window);
         return;
     }
     synchronize_geometry(window);

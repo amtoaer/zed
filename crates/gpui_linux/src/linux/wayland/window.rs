@@ -132,9 +132,9 @@ pub struct WaylandWindowState {
     handle: AnyWindowHandle,
     active: bool,
     hovered: bool,
-    redraw_requested: bool,
-    presentation: PresentationState,
-    pending_frame_callback: Option<wl_callback::WlCallback>,
+    pub(crate) redraw_requested: bool,
+    pub(crate) presentation: PresentationState,
+    pub(crate) pending_frame_callback: Option<wl_callback::WlCallback>,
     in_progress_configure: Option<InProgressConfigure>,
     resize_throttle: bool,
     in_progress_window_controls: Option<WindowControls>,
@@ -547,7 +547,7 @@ impl WaylandSurfaceState {
 pub struct WaylandWindowStatePtr {
     state: Rc<RefCell<WaylandWindowState>>,
     callbacks: Rc<RefCell<Callbacks>>,
-    frame_loop: Rc<Cell<FrameLoop>>,
+    pub(crate) frame_loop: Rc<Cell<FrameLoop>>,
     frame_ping: Ping,
     scheduled_frame_at: Rc<Cell<Option<Instant>>>,
 }
@@ -698,7 +698,7 @@ impl WaylandWindowState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PresentationState {
+pub(crate) enum PresentationState {
     Unpresented,
     Presented,
     RetryBeforeFirstPresent,
@@ -713,7 +713,7 @@ impl PresentationState {
         )
     }
 
-    fn failed(self) -> Self {
+    pub(crate) fn failed(self) -> Self {
         match self {
             Self::Unpresented | Self::RetryBeforeFirstPresent => Self::RetryBeforeFirstPresent,
             Self::Presented | Self::RetryAfterPresent => Self::RetryAfterPresent,
@@ -755,7 +755,7 @@ mod presentation_state_tests {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrameLoop {
+pub(crate) enum FrameLoop {
     Unconfigured,
     Ticking,
     RescheduleRequested,
@@ -832,7 +832,7 @@ impl WaylandWindow {
         self.0.state.borrow()
     }
 
-    fn borrow_mut(&self) -> RefMut<'_, WaylandWindowState> {
+    pub(crate) fn borrow_mut(&self) -> RefMut<'_, WaylandWindowState> {
         self.0.state.borrow_mut()
     }
 
@@ -2022,55 +2022,10 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn draw(&self, scene: &Scene) {
-        let mut state = self.borrow_mut();
-        let state = &mut *state;
-        let Some(renderer) = &mut state.renderer else {
-            return;
-        };
-
-        if renderer.device_lost() {
-            let raw_window = RawWindow {
-                window: state.surface.id().as_ptr().cast::<std::ffi::c_void>(),
-                display: state
-                    .surface
-                    .backend()
-                    .upgrade()
-                    .unwrap()
-                    .display_ptr()
-                    .cast::<std::ffi::c_void>(),
-            };
-            match renderer.recover(&raw_window) {
-                Ok(()) => {
-                    crate::fast::composition::wayland::Composition::renderers_lost(
-                        &state.fast_composition,
-                    );
-                }
-                Err(err) => {
-                    log::warn!("GPU recovery failed, will retry on next frame: {err}");
-                }
-            }
-
-            state.redraw_requested = true;
-            return;
-        }
-
-        // Surface state changed during this GPUI tick is included in this presentation.
-        state.redraw_requested = false;
-        if state.pending_frame_callback.is_none() {
-            let callback = state.surface.frame(&state.globals.qh, state.surface.id());
-            state.pending_frame_callback = Some(callback);
-        }
-        if renderer.draw(scene) {
-            state.presentation = PresentationState::Presented;
-            self.0.frame_loop.set(FrameLoop::AwaitingCallback);
-        } else {
-            state.presentation = state.presentation.failed();
-            self.0.frame_loop.set(FrameLoop::PresentationFailed);
-        }
-
-        if renderer.needs_redraw() {
-            state.redraw_requested = true;
-        }
+        crate::fast::damage::wayland(self, scene, None);
+    }
+    fn draw_with_damage(&self, scene: &Scene, damage: &gpui::SceneDamage) {
+        crate::fast::damage::wayland(self, scene, Some(damage));
     }
 
     fn draw_composed(&self, scene: gpui::ComposedScene<'_>) {

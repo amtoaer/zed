@@ -206,8 +206,20 @@ for Lyrune's runtime background animation setting. Their implementations live in
 `fast::glyphs` and `fast::frame_rate`; these are intentionally additional public
 APIs required by Lyrune. Image-cache loads use the existing dependency query path
 so LRU bookkeeping does not invalidate other views sharing the cache; explicit
-notifications still invalidate dependents. The fork does not carry scene-damage
-or partial-rendering patches.
+notifications still invalidate dependents.
+
+The fork also carries the scene-damage and WGPU partial-rendering patches from
+Lyrune's GPUI Pre snapshot, including a417dfb's accumulation until presentation.
+`SceneDamage`, `DamageRects`, `PlatformWindow::draw_with_damage` and
+`WgpuRenderer::draw_with_damage` are additional cross-crate APIs required for
+this path. Logic lives in `fast::damage` / `fast::damage_window`; upstream draw
+bodies forward there, retaining their recovery and platform callback behavior.
+Fast's scroll-layer generations and rounded clip contents participate in damage
+comparison, while its shared instance upload and path batching remain in use.
+The existing `GPUI_EXPERIMENTAL_PRESENT_SKIP` and
+`GPUI_EXPERIMENTAL_PARTIAL_RENDER` switches remain available (default on).
+Window composition conservatively uses full draws; backends without the WGPU
+partial path use the default full-draw implementation.
 
 ## Syncing with upstream
 

@@ -1305,6 +1305,7 @@ pub struct Window {
     pub(crate) fast_frame_rate: crate::fast::frame_rate::FrameRate,
     pub(crate) hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
+    pub(crate) fast_damage: crate::fast::damage_window::WindowDamage,
     /// Tracks recent input event timestamps to determine if input is arriving at a high rate.
     /// Used to selectively enable VRR optimization only when input rate exceeds 60fps.
     pub(crate) input_rate_tracker: Rc<RefCell<InputRateTracker>>,
@@ -1918,7 +1919,8 @@ impl Window {
                 // to prevent display underclocking during active input.
                 let needs_present = request_frame_options.require_presentation
                     || needs_present.get()
-                    || input_rate_tracker.borrow_mut().is_high_rate();
+                    || (!crate::fast::damage_window::present_skip_enabled()
+                        && input_rate_tracker.borrow_mut().is_high_rate());
 
                 let should_draw = invalidator.is_dirty() || force_render;
                 if should_draw {
@@ -1935,7 +1937,10 @@ impl Window {
                                     window.refresh();
                                 }
                                 let arena_clear_needed = window.draw(cx);
-                                window.present();
+                                crate::fast::damage_window::present_if_needed(
+                                    window,
+                                    request_frame_options.require_presentation,
+                                );
                                 arena_clear_needed.clear(cx);
                             })
                             .log_err();
@@ -2218,6 +2223,7 @@ impl Window {
             fast_frame_rate,
             hovered,
             needs_present,
+            fast_damage: crate::fast::damage_window::WindowDamage::default(),
             input_rate_tracker,
             #[cfg(feature = "profiler")]
             window_profiler: profiler::WindowProfiler::new(handle.window_id())?,
@@ -3563,6 +3569,7 @@ impl Window {
         crate::fast::global_id::GlobalIdCache::finish_frame(&mut self.global_ids);
         crate::fast::retained::finish_retained_frame(self);
         self.next_frame.finish(&mut self.rendered_frame);
+        let fast_damage = crate::fast::damage_window::compare(self);
 
         self.invalidator.set_phase(DrawPhase::Focus);
         let previous_focus_path = self.rendered_frame.focus_path();
@@ -3618,7 +3625,7 @@ impl Window {
         if self.focus != focus_before_listeners {
             self.refresh();
         }
-        self.needs_present.set(true);
+        crate::fast::damage_window::finish(self, fast_damage);
 
         #[cfg(feature = "profiler")]
         {
@@ -3659,7 +3666,7 @@ impl Window {
     }
 
     #[profiling::function]
-    fn present(&mut self) {
+    pub(crate) fn present(&mut self) {
         #[cfg(feature = "profiler")]
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
@@ -8698,20 +8705,7 @@ mod tests {
 
     #[gpui::test]
     fn pending_presentation_wakes_a_parked_render_loop(cx: &mut TestAppContext) {
-        let window = cx.add_window(|_, _| Empty);
-        let test_window = cx.test_window(window.into());
-
-        assert!(test_window.simulate_scheduled_frame());
-        assert!(test_window.simulate_scheduled_frame());
-        assert!(!test_window.frame_scheduled());
-
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
-            .unwrap();
-
-        assert!(
-            test_window.frame_scheduled(),
-            "a rendered scene awaiting presentation must wake the render loop"
-        );
+        crate::fast::damage_window::pending_presentation_wakes_a_parked_render_loop(cx);
     }
 
     #[gpui::test]

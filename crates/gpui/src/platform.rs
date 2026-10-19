@@ -1278,6 +1278,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
     fn draw(&self, scene: &Scene);
+
+    fn draw_with_damage(&self, scene: &Scene, _damage: &crate::SceneDamage) {
+        crate::fast::damage_window::draw_platform(self, scene);
+    }
     fn draw_composed(&self, scene: crate::fast::composition::ComposedScene<'_>) {
         crate::fast::composition::draw_uncomposed(self, scene)
     }

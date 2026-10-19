@@ -12,3 +12,5 @@ pub(crate) mod composition;
 pub(crate) mod x11_scale;
 #[cfg(feature = "x11")]
 pub(crate) mod xim;
+
+pub(crate) mod damage;

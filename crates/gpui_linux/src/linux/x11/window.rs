@@ -228,11 +228,11 @@ fn find_visuals(xcb: &XCBConnection, screen_index: usize) -> VisualSet {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RawWindow {
-    connection: *mut c_void,
-    screen_id: usize,
-    window_id: u32,
-    visual_id: u32,
+pub(crate) struct RawWindow {
+    pub(crate) connection: *mut c_void,
+    pub(crate) screen_id: usize,
+    pub(crate) window_id: u32,
+    pub(crate) visual_id: u32,
 }
 
 // Safety: The raw pointers in RawWindow point to X11 connection
@@ -263,8 +263,8 @@ pub struct X11WindowState {
     executor: ForegroundExecutor,
     atoms: XcbAtoms,
     x_root_window: xproto::Window,
-    x_screen_index: usize,
-    visual_id: u32,
+    pub(crate) x_screen_index: usize,
+    pub(crate) visual_id: u32,
     pub(crate) counter_id: sync::Counter,
     pub(crate) last_sync_counter: Option<sync::Int64>,
     bounds: Bounds<Pixels>,
@@ -285,7 +285,7 @@ pub struct X11WindowState {
     /// `VisibilityNotify`; this is the last value it reported.
     visibility: WindowVisibility,
     hovered: bool,
-    force_render_after_recovery: bool,
+    pub(crate) force_render_after_recovery: bool,
     fullscreen: bool,
     client_side_decorations_supported: bool,
     decorations: WindowDecorations,
@@ -1757,37 +1757,10 @@ impl PlatformWindow for X11Window {
     }
 
     fn draw(&self, scene: &Scene) {
-        let mut inner = self.0.state.borrow_mut();
-        let inner = &mut *inner;
-        let Some(renderer) = &mut inner.renderer else {
-            return;
-        };
-
-        if renderer.device_lost() {
-            let raw_window = RawWindow {
-                connection: as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(
-                    &*self.0.xcb,
-                ) as *mut _,
-                screen_id: inner.x_screen_index,
-                window_id: self.0.x_window,
-                visual_id: inner.visual_id,
-            };
-            match renderer.recover(&raw_window) {
-                Ok(()) => {}
-                Err(err) => {
-                    log::warn!("GPU recovery failed, will retry on next frame: {err}");
-                }
-            }
-
-            inner.force_render_after_recovery = true;
-            return;
-        }
-
-        renderer.draw(scene);
-
-        if renderer.needs_redraw() {
-            inner.force_render_after_recovery = true;
-        }
+        crate::fast::damage::x11(self, scene, None);
+    }
+    fn draw_with_damage(&self, scene: &Scene, damage: &gpui::SceneDamage) {
+        crate::fast::damage::x11(self, scene, Some(damage));
     }
 
     fn draw_composed(&self, scene: gpui::ComposedScene<'_>) {

@@ -203,7 +203,7 @@ struct CachedTextureBindGroup {
 }
 
 impl WgpuResources {
-    fn invalidate_intermediate_textures(&mut self) {
+    pub(crate) fn invalidate_intermediate_textures(&mut self) {
         self.path_intermediate_texture = None;
         self.path_intermediate_view = None;
         self.path_msaa_texture = None;
@@ -231,7 +231,7 @@ pub(crate) struct WgpuRendererCore {
 
 /// GPU resources of a windowed renderer. A surface is only ever configured against the
 /// device that owns `core`, so it cannot outlive it: there is no surface-only state.
-enum RendererState {
+pub(crate) enum RendererState {
     /// Frames can be drawn.
     Ready {
         surface: wgpu::Surface<'static>,
@@ -252,18 +252,19 @@ pub struct WgpuRenderer {
     /// Compositor GPU hint for adapter selection (unused on WASM).
     #[allow(dead_code)]
     pub(crate) compositor_gpu: Option<CompositorGpuHint>,
-    state: RendererState,
-    surface_config: wgpu::SurfaceConfiguration,
+    pub(crate) state: RendererState,
+    pub(crate) surface_config: wgpu::SurfaceConfiguration,
     pub(crate) atlas: Arc<WgpuAtlas>,
     transparent_alpha_mode: wgpu::CompositeAlphaMode,
     opaque_alpha_mode: wgpu::CompositeAlphaMode,
     max_texture_size: u32,
     pub(crate) is_bgr: bool,
-    failed_frame_count: u32,
-    device_errors: Arc<DeviceErrorState>,
-    observed_error_generation: u64,
-    last_surface_error: Option<String>,
-    needs_redraw: bool,
+    pub(crate) failed_frame_count: u32,
+    pub(crate) device_errors: Arc<DeviceErrorState>,
+    pub(crate) observed_error_generation: u64,
+    pub(crate) last_surface_error: Option<String>,
+    pub(crate) needs_redraw: bool,
+    pub(crate) fast_damage: crate::fast::damage::RendererDamage,
 }
 
 impl WgpuRenderer {
@@ -453,7 +454,7 @@ impl WgpuRenderer {
         }
 
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: crate::fast::damage::surface_usage(&surface_caps),
             format: surface_format,
             color_space: wgpu::SurfaceColorSpace::Auto,
             width: clamped_width.max(1),
@@ -487,6 +488,7 @@ impl WgpuRenderer {
             observed_error_generation: 0,
             last_surface_error: None,
             needs_redraw: false,
+            fast_damage: crate::fast::damage::RendererDamage::default(),
         })
     }
 }
@@ -1015,6 +1017,7 @@ impl WgpuRenderer {
             );
         }
         self.surface_config.width = clamped_width.max(1);
+        crate::fast::damage::RendererDamage::invalidate(&mut self.fast_damage);
         self.surface_config.height = clamped_height.max(1);
 
         let Some(core) = self.core_mut() else {
@@ -1051,6 +1054,7 @@ impl WgpuRenderer {
 
     pub fn set_subpixel_layout(&mut self, is_bgr: bool) {
         self.is_bgr = is_bgr;
+        crate::fast::damage::RendererDamage::invalidate(&mut self.fast_damage);
         if let Some(core) = self.core_mut() {
             core.is_bgr = is_bgr;
         }
@@ -1066,6 +1070,7 @@ impl WgpuRenderer {
             return;
         }
         self.surface_config.alpha_mode = new_alpha_mode;
+        crate::fast::damage::RendererDamage::invalidate(&mut self.fast_damage);
         let format = self.surface_config.format;
 
         let Some(core) = self.core_mut() else {
@@ -1121,95 +1126,7 @@ impl WgpuRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) -> bool {
-        #[cfg(target_family = "wasm")]
-        if self.device_lost() {
-            if matches!(self.state, RendererState::Ready { .. }) {
-                log::error!(
-                    "Browser graphics context was lost; rendering has stopped. Reload the page to recover."
-                );
-                self.unconfigure_surface();
-            }
-            return false;
-        }
-
-        // Bail out early if the surface has been unconfigured (e.g. during
-        // Android background/rotation transitions).  Attempting to acquire
-        // a texture from an unconfigured surface can block indefinitely on
-        // some drivers (Adreno).
-        let RendererState::Ready { surface, core } = &mut self.state else {
-            return false;
-        };
-
-        if let Some(error) = self.last_surface_error.take().or_else(|| {
-            self.device_errors
-                .observe_error(&mut self.observed_error_generation)
-        }) {
-            self.failed_frame_count += 1;
-            log::error!(
-                "GPU error during frame (failure {} of 10): {error}",
-                self.failed_frame_count
-            );
-
-            // TBD. Does retrying more actually help?
-            if self.failed_frame_count > 10 {
-                panic!("Too many consecutive GPU errors. Last error: {error}");
-            } else if self.failed_frame_count > 5 {
-                core.resources.invalidate_intermediate_textures();
-                self.atlas.clear();
-                crate::fast::layers::TileCache::clear(&mut core.fast_frame.layers);
-                self.needs_redraw = true;
-                self.failed_frame_count = 0;
-                return false;
-            }
-        } else {
-            self.failed_frame_count = 0;
-        }
-
-        let frame = match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                // Textures must be destroyed before the surface can be reconfigured.
-                drop(frame);
-                surface.configure(&core.resources.device, &self.surface_config);
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                surface.configure(&core.resources.device, &self.surface_config);
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                self.last_surface_error = Some("Surface texture validation error".to_string());
-                return false;
-            }
-        };
-
-        // The acquired texture is the authority on frame dimensions; the surface
-        // configuration is only a request.
-        let size = Size {
-            width: DevicePixels(frame.texture.width() as i32),
-            height: DevicePixels(frame.texture.height() as i32),
-        };
-        let frame_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let premultiplied_alpha =
-            self.surface_config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied;
-        if let Err(error) = core.render_frame(
-            scene,
-            &frame_view,
-            size,
-            premultiplied_alpha,
-            wgpu::Color::TRANSPARENT,
-        ) {
-            log::error!("{error:#}");
-            return false;
-        }
-
-        core.resources.queue.present(frame);
-        true
+        crate::fast::damage::draw(self, scene, None)
     }
 }
 
@@ -1416,7 +1333,7 @@ impl WgpuRendererCore {
         resources.path_msaa_view = path_msaa_view;
     }
 
-    fn render_frame(
+    pub(crate) fn render_frame(
         &mut self,
         scene: &Scene,
         target_view: &wgpu::TextureView,
@@ -2110,6 +2027,7 @@ impl WgpuRenderer {
     /// (e.g. Android `TerminateWindow`) but you intend to re-create the
     /// surface later without losing cached atlas textures.
     pub fn unconfigure_surface(&mut self) {
+        crate::fast::damage::RendererDamage::invalidate(&mut self.fast_damage);
         self.state = match std::mem::replace(&mut self.state, RendererState::Released) {
             RendererState::Ready { core, surface } => {
                 drop(surface);
@@ -2138,6 +2056,7 @@ impl WgpuRenderer {
         config: WgpuSurfaceConfig,
         instance: &wgpu::Instance,
     ) -> anyhow::Result<()> {
+        crate::fast::damage::RendererDamage::invalidate(&mut self.fast_damage);
         let window_handle = window
             .window_handle()
             .map_err(|e| anyhow::anyhow!("Failed to get window handle: {e}"))?;
@@ -2181,6 +2100,7 @@ impl WgpuRenderer {
     }
 
     pub fn destroy(&mut self) {
+        crate::fast::damage::RendererDamage::invalidate(&mut self.fast_damage);
         // Release surface-bound GPU resources eagerly so the underlying native
         // window can be destroyed before the renderer itself is dropped.
         self.state = RendererState::Released;
@@ -2209,6 +2129,7 @@ impl WgpuRenderer {
     where
         W: HasWindowHandle + HasDisplayHandle + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
+        crate::fast::damage::RendererDamage::invalidate(&mut self.fast_damage);
         let gpu_context = self.context.as_ref().expect("recover requires gpu_context");
 
         // Check if another window already recovered the context
@@ -2281,9 +2202,9 @@ impl WgpuRenderer {
     not(target_family = "wasm"),
     any(test, feature = "bench-support", feature = "test-support")
 ))]
-struct HeadlessRenderTarget {
+pub(crate) struct HeadlessRenderTarget {
     texture: wgpu::Texture,
-    view: wgpu::TextureView,
+    pub(crate) view: wgpu::TextureView,
 }
 
 #[cfg(all(
@@ -2306,7 +2227,7 @@ impl HeadlessRenderTarget {
 pub struct WgpuHeadlessRenderer {
     context: WgpuContext,
     pub(crate) core: WgpuRendererCore,
-    render_target: Option<HeadlessRenderTarget>,
+    pub(crate) render_target: Option<HeadlessRenderTarget>,
     observed_error_generation: u64,
 }
 
@@ -2409,7 +2330,7 @@ impl WgpuHeadlessRenderer {
 
     /// Copies the current render target back to the CPU. Dimensions come from the
     /// target texture itself, so the copy can never disagree with what was rendered.
-    fn read_image(&mut self) -> anyhow::Result<image::RgbaImage> {
+    pub(crate) fn read_image(&mut self) -> anyhow::Result<image::RgbaImage> {
         let target = self
             .render_target
             .as_ref()
