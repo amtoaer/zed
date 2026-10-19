@@ -503,3 +503,94 @@ pub(crate) fn has_no_background(decoration_runs: &[DecorationRun]) -> bool {
         .iter()
         .all(|run| run.background_color.is_none())
 }
+
+pub(crate) fn paint_glyph(
+    window: &mut Window,
+    origin: Point<Pixels>,
+    font_id: FontId,
+    glyph_id: GlyphId,
+    font_size: Pixels,
+    color: Hsla,
+) -> Result<()> {
+    window.paint_glyph_with_transformation(
+        origin,
+        font_id,
+        glyph_id,
+        font_size,
+        TransformationMatrix::unit(),
+        color,
+    )
+}
+
+impl Window {
+    /// Paints a monochrome glyph with a transformation applied to its sprite.
+    /// The glyph is rasterized at `font_size`, so animated scaling reuses its atlas entry.
+    pub fn paint_glyph_with_transformation(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        transformation: TransformationMatrix,
+        color: Hsla,
+    ) -> Result<()> {
+        self.invalidator.debug_assert_paint();
+
+        let element_opacity = self.element_opacity();
+        let scale_factor = self.scale_factor();
+        let glyph_origin = origin.scale(scale_factor);
+
+        let (integer_origin, subpixel_variant) = crate::fast::glyphs::quantize_origin(glyph_origin);
+        let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
+        let dilation = self.text_system().glyph_dilation_for_color(color);
+        let params = RenderGlyphParams {
+            font_id,
+            glyph_id,
+            font_size,
+            subpixel_variant,
+            scale_factor,
+            is_emoji: false,
+            subpixel_rendering,
+            dilation,
+        };
+
+        let raster_bounds = self.text_system().raster_bounds(&params)?;
+        if !raster_bounds.is_zero() {
+            let tile = self
+                .sprite_atlas
+                .get_or_insert_with(params.clone().into(), &mut || {
+                    let (size, bytes) = self.text_system().rasterize_glyph(&params)?;
+                    Ok(Some((size, Cow::Owned(bytes))))
+                })?
+                .expect("Callback above only errors or returns Some");
+            let bounds = Bounds {
+                origin: integer_origin + raster_bounds.origin.map(Into::into),
+                size: tile.bounds.size.map(Into::into),
+            };
+            let content_mask = self.snapped_content_mask();
+
+            if subpixel_rendering {
+                self.next_frame.scene.insert_primitive(SubpixelSprite {
+                    order: 0,
+                    pad: 0,
+                    bounds,
+                    content_mask,
+                    color: color.opacity(element_opacity),
+                    tile,
+                    transformation,
+                });
+            } else {
+                self.next_frame.scene.insert_primitive(MonochromeSprite {
+                    order: 0,
+                    pad: 0,
+                    bounds,
+                    content_mask,
+                    color: color.opacity(element_opacity),
+                    tile,
+                    transformation,
+                });
+            }
+        }
+        Ok(())
+    }
+}

@@ -198,6 +198,17 @@ When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
 differs.
 
+### Lyrune fork APIs
+
+This fork additionally keeps `Window::paint_glyph_with_transformation` for lyric
+scaling without new glyph atlas entries, and `Window::set_inactive_frame_interval`
+for Lyrune's runtime background animation setting. Their implementations live in
+`fast::glyphs` and `fast::frame_rate`; these are intentionally additional public
+APIs required by Lyrune. Image-cache loads use the existing dependency query path
+so LRU bookkeeping does not invalidate other views sharing the cache; explicit
+notifications still invalidate dependents. The fork does not carry scene-damage
+or partial-rendering patches.
+
 ## Syncing with upstream
 
 Upstream is [zed-industries/zed](https://github.com/zed-industries/zed). The

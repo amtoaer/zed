@@ -802,8 +802,8 @@ pub(crate) fn render_next(entities: &mut EntityMap, entity_id: EntityId) {
     entities.access_log.rendering = Some(entity_id);
 }
 
-/// Updates `entity` to ask it something, as the platform asks a text input
-/// whether it accepts text or where its selection is, every frame. Unlike
+/// Updates `entity` to ask it something, as the platform queries a text input
+/// or drawing looks up an image cache. Unlike
 /// [`Entity::update`], this does not count as changing what the entity holds,
 /// unless it notifies while it is asked.
 #[inline(always)]

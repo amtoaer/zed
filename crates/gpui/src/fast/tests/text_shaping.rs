@@ -316,3 +316,40 @@ fn a_line_without_backgrounds_has_no_background_to_paint() {
         run(Some(hsla(0.1, 0.5, 0.5, 1.)))
     ]));
 }
+
+#[test]
+fn test_transformed_glyph_reuses_atlas() {
+    use std::sync::Arc;
+
+    use crate::{NoopTextSystem, TestAppContext, TransformationMatrix, window::DrawPhase};
+
+    let mut cx = TestAppContext::with_text_system(Arc::new(super::oracle::GlyphBoxTextSystem(
+        NoopTextSystem,
+    )));
+    let cx = cx.add_empty_window();
+    cx.update(|window, _| {
+        window.invalidator.set_phase(DrawPhase::Paint);
+        let origin = point(px(20.), px(20.));
+        let color = hsla(0., 0., 1., 1.);
+        window
+            .paint_glyph(origin, FontId(0), GlyphId(1), px(16.), color)
+            .unwrap();
+        let transformation = TransformationMatrix::unit().scale(size(1.5, 1.5));
+        window
+            .paint_glyph_with_transformation(
+                origin,
+                FontId(0),
+                GlyphId(1),
+                px(16.),
+                transformation,
+                color,
+            )
+            .unwrap();
+        let sprites = &window.next_frame.scene.monochrome_sprites;
+        assert_eq!(sprites.len(), 2);
+        assert_eq!(sprites[0].tile, sprites[1].tile);
+        assert_eq!(sprites[0].transformation, TransformationMatrix::unit());
+        assert_eq!(sprites[1].transformation, transformation);
+        window.invalidator.set_phase(DrawPhase::None);
+    });
+}
