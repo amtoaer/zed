@@ -554,15 +554,29 @@ impl Window {
             dilation,
         };
 
-        let raster_bounds = self.text_system().raster_bounds(&params)?;
+        let (raster_bounds, tile, _) = match self.fast_glyph_bounds.lookup(&params) {
+            Some(kept) => kept,
+            None => {
+                let raster_bounds = self.text_system().raster_bounds(&params)?;
+                self.fast_glyph_bounds.insert(&params, raster_bounds);
+                (raster_bounds, None, None)
+            }
+        };
         if !raster_bounds.is_zero() {
-            let tile = self
-                .sprite_atlas
-                .get_or_insert_with(params.clone().into(), &mut || {
-                    let (size, bytes) = self.text_system().rasterize_glyph(&params)?;
-                    Ok(Some((size, Cow::Owned(bytes))))
-                })?
-                .expect("Callback above only errors or returns Some");
+            let tile = match tile {
+                Some(tile) => tile,
+                None => {
+                    let tile = self
+                        .sprite_atlas
+                        .get_or_insert_with(params.clone().into(), &mut || {
+                            let (size, bytes) = self.text_system().rasterize_glyph(&params)?;
+                            Ok(Some((size, Cow::Owned(bytes))))
+                        })?
+                        .expect("Callback above only errors or returns Some");
+                    self.fast_glyph_bounds.insert_tile(&params, tile);
+                    tile
+                }
+            };
             let bounds = Bounds {
                 origin: integer_origin + raster_bounds.origin.map(Into::into),
                 size: tile.bounds.size.map(Into::into),

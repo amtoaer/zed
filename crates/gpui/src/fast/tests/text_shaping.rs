@@ -350,6 +350,38 @@ fn test_transformed_glyph_reuses_atlas() {
         assert_eq!(sprites[0].tile, sprites[1].tile);
         assert_eq!(sprites[0].transformation, TransformationMatrix::unit());
         assert_eq!(sprites[1].transformation, transformation);
+        let tile = sprites[1].tile;
+        let params = RenderGlyphParams {
+            font_id: FontId(0),
+            glyph_id: GlyphId(1),
+            font_size: px(16.),
+            subpixel_variant: point(0, 0),
+            scale_factor: window.scale_factor(),
+            is_emoji: false,
+            subpixel_rendering: window.should_use_subpixel_rendering(FontId(0), px(16.)),
+            dilation: window.text_system().glyph_dilation_for_color(color),
+        };
+        assert_eq!(
+            window.fast_glyph_bounds.lookup(&params).unwrap().1,
+            Some(tile)
+        );
+        window.fast_glyph_bounds.finish_frame();
+        assert_eq!(window.fast_glyph_bounds.lookup(&params).unwrap().1, None);
+        window
+            .paint_glyph_with_transformation(
+                origin,
+                FontId(0),
+                GlyphId(1),
+                px(16.),
+                transformation,
+                color,
+            )
+            .unwrap();
+        assert_eq!(
+            window.fast_glyph_bounds.lookup(&params).unwrap().1,
+            Some(tile)
+        );
+        assert_eq!(window.next_frame.scene.monochrome_sprites[2].tile, tile);
         window.invalidator.set_phase(DrawPhase::None);
     });
 }

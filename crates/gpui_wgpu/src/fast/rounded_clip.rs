@@ -3,11 +3,13 @@
 //! Every colour pipeline evaluates its stack of padding edges. A disabled
 //! binding keeps ordinary frames on the same pipelines without mask passes.
 
+use std::cell::RefCell;
+
 use gpui::{AtlasTextureId, LayerFrame, Scene};
 /// Three RGBA32Float texels per padding edge: bounds, horizontal radii and
 /// vertical radii. Texture transport also works on WebGL without storage buffers.
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Clip {
     bounds: [f32; 4],
     horizontal: [f32; 4],
@@ -59,6 +61,7 @@ pub(crate) fn headless_instance() -> wgpu::Instance {
 pub(crate) struct Bindings {
     pub(crate) layout: wgpu::BindGroupLayout,
     pub(crate) unmasked: wgpu::BindGroup,
+    cached: RefCell<Option<(Vec<Vec<Clip>>, wgpu::BindGroup)>>,
 }
 
 impl Bindings {
@@ -95,7 +98,11 @@ impl Bindings {
             &dummy.create_view(&Default::default()),
             &[0; 4],
         );
-        Self { layout, unmasked }
+        Self {
+            layout,
+            unmasked,
+            cached: RefCell::new(None),
+        }
     }
 
     pub(crate) fn clip_sets(
@@ -105,6 +112,12 @@ impl Bindings {
         sets: &[Vec<Clip>],
     ) -> (wgpu::BindGroup, u32) {
         let alignment = device.limits().min_uniform_buffer_offset_alignment.max(16);
+        let mut cached = self.cached.borrow_mut();
+        if let Some((previous, binding)) = cached.as_ref()
+            && previous == sets
+        {
+            return (binding.clone(), alignment);
+        }
         let mut all = Vec::new();
         let mut flags = vec![0u32; (alignment / 4) as usize];
         for clips in sets {
@@ -136,15 +149,14 @@ impl Bindings {
             },
             data_texture.size(),
         );
-        (
-            bind(
-                device,
-                &self.layout,
-                &data_texture.create_view(&Default::default()),
-                &flags,
-            ),
-            alignment,
-        )
+        let binding = bind(
+            device,
+            &self.layout,
+            &data_texture.create_view(&Default::default()),
+            &flags,
+        );
+        *cached = Some((sets.to_vec(), binding.clone()));
+        (binding, alignment)
     }
 }
 
@@ -371,6 +383,44 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
             .validate(&module)
             .expect("rounded clip shader validates");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn test_clip_bindings_reuse() {
+        let renderer = crate::wgpu_renderer::WgpuHeadlessRenderer::new()
+            .expect("clip binding regression requires a GPU");
+        let resources = &renderer.core.resources;
+        let bindings = &resources.bind_group_layouts.fast_rounded_clip;
+        let mut clips = vec![vec![
+            super::Clip {
+                bounds: [0., 0., 100., 100.],
+                horizontal: [20.; 4],
+                vertical: [20.; 4],
+            };
+            2
+        ]];
+        let first = bindings.clip_sets(&resources.device, &resources.queue, &clips);
+        assert_eq!(
+            first,
+            bindings.clip_sets(&resources.device, &resources.queue, &clips)
+        );
+
+        clips[0][0].vertical[0] = 10.;
+        let changed = bindings.clip_sets(&resources.device, &resources.queue, &clips);
+        assert_ne!(first.0, changed.0);
+        assert_eq!(
+            changed,
+            bindings.clip_sets(&resources.device, &resources.queue, &clips)
+        );
+
+        clips = vec![vec![clips[0][0]], vec![clips[0][1]]];
+        let regrouped = bindings.clip_sets(&resources.device, &resources.queue, &clips);
+        assert_ne!(changed.0, regrouped.0);
+        assert_eq!(
+            regrouped,
+            bindings.clip_sets(&resources.device, &resources.queue, &clips)
+        );
     }
 
     #[test]
