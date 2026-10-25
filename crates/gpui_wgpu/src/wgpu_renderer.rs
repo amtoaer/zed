@@ -584,6 +584,7 @@ impl WgpuRenderer {
         let surface_config = wgpu::SurfaceConfiguration {
             usage: surface_usage,
             format: surface_format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: clamped_width.max(1),
             height: clamped_height.max(1),
             present_mode: config
@@ -1428,7 +1429,7 @@ impl WgpuRenderer {
                 log::error!("{error:#}");
                 return false;
             }
-            frame.present();
+            core.resources.queue.present(frame);
             return true;
         }
 
@@ -1516,7 +1517,23 @@ impl WgpuRenderer {
         core.resources
             .queue
             .submit(std::iter::once(encoder.finish()));
-        frame.present();
+        match &render_regions {
+            RenderRegions::Partial(regions) => {
+                let damage_rects: smallvec::SmallVec<[wgpu::Rect<u32>; 4]> = regions
+                    .iter()
+                    .map(|region| wgpu::Rect {
+                        x: region.x,
+                        y: region.y,
+                        w: region.width,
+                        h: region.height,
+                    })
+                    .collect();
+                core.resources
+                    .queue
+                    .present_with_damage(frame, &damage_rects);
+            }
+            RenderRegions::Full | RenderRegions::None => core.resources.queue.present(frame),
+        }
         self.pending_damage = SceneDamage::Unchanged;
         true
     }
@@ -2880,7 +2897,7 @@ impl WgpuHeadlessRenderer {
             .map_err(|error| anyhow::anyhow!("Failed to map headless readback buffer: {error}"))?;
         self.check_gpu_errors()?;
 
-        let mapped_data = readback_buffer.slice(..).get_mapped_range();
+        let mapped_data = readback_buffer.slice(..).get_mapped_range()?;
         let pixel_capacity = usize::try_from(u64::from(bytes_per_row) * u64::from(height))
             .map_err(|_| anyhow::anyhow!("Headless image size exceeds addressable memory"))?;
         let mut pixels = Vec::with_capacity(pixel_capacity);
