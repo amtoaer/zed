@@ -798,10 +798,14 @@ impl WaylandClientStatePtr {
         let client = self.get_client();
         let mut state = client.borrow_mut();
         let closed_window = state.windows.remove(surface_id).unwrap();
-        if let Some(window) = state.mouse_focused_window.take()
-            && !window.ptr_eq(&closed_window)
+        if state
+            .mouse_focused_window
+            .as_ref()
+            .is_some_and(|window| window.ptr_eq(&closed_window))
         {
-            state.mouse_focused_window = Some(window);
+            state.mouse_focused_window = None;
+            state.mouse_location = None;
+            state.button_pressed = None;
         }
         if let Some(window) = state.keyboard_focused_window.take()
             && !window.ptr_eq(&closed_window)
